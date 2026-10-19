@@ -95,7 +95,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Tạo FastAPI app với middleware và toàn bộ route."""
-    app = FastAPI(title="kwishtt", lifespan=lifespan)
+    app = FastAPI(title="YuleeVoice", lifespan=lifespan)
     app.middleware("http")(auth_middleware)
     app.include_router(api_router)
     app.add_api_websocket_route("/ws", websocket_endpoint)

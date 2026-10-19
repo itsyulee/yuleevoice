@@ -181,6 +181,14 @@ async def stop() -> dict[str, Any]:
     return {"success": True, "message": "Đã dừng tất cả bots"}
 
 
+@router.post("/bots/{bot_id}/stop")
+async def stop_bot(bot_id: str) -> dict[str, Any]:
+    """Stop a single bot without touching the other connections."""
+    if not await bot_manager.stop_single(bot_id):
+        raise HTTPException(status_code=404, detail="Không tìm thấy bot")
+    return {"success": True}
+
+
 @router.post("/toggle")
 async def toggle(body: ToggleBody) -> dict[str, Any]:
     """Toggle mic/deaf/video hoặc stream cho một bot hoặc toàn bộ bot."""

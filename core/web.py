@@ -144,13 +144,13 @@ _DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>yuleevoice</title>
+<title>YuleeVoice</title>
 <style>
 :root{
-  --bg:#1e1f22; --surface:#2b2d31; --surface-2:#313338; --surface-3:#383a40;
-  --border:#3f4147; --border-strong:#4e5058;
+  --bg:#0b1020; --surface:#141b30; --surface-2:#1b2440; --surface-3:#253052;
+  --border:#2c3655; --border-strong:#485780;
   --text:#f2f3f5; --text-muted:#b5bac1; --text-faint:#949ba4;
-  --accent:#5865f2; --accent-hover:#4752c4; --accent-soft:rgba(88,101,242,.16);
+  --accent:#a78bfa; --accent-hover:#8b5cf6; --accent-soft:rgba(167,139,250,.16);
   --green:#23a55a; --yellow:#f0b232; --red:#f23f43; --gray:#80848e;
   --radius:10px; --radius-lg:14px;
   --shadow:0 12px 32px rgba(0,0,0,.5);
@@ -173,6 +173,7 @@ a{color:var(--accent);}
 /* ---------- Icons ---------- */
 .ico{display:inline-flex;width:16px;height:16px;flex:0 0 auto;}
 .ico svg{width:100%;height:100%;display:block;}
+.control-emoji{width:20px;height:20px;align-items:center;justify-content:center;font-size:17px;line-height:1;}
 
 /* ---------- Login ---------- */
 .login-screen{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:20px;}
@@ -192,9 +193,11 @@ a{color:var(--accent);}
 .btn:hover{border-color:var(--border-strong);background:var(--surface-3);}
 .btn:active{transform:translateY(1px);}
 .btn:disabled{opacity:.5;cursor:not-allowed;}
-#start-btn:disabled:hover .ico,#stop-btn:disabled:hover .ico{font-size:0;}
-#start-btn:disabled:hover .ico svg,#stop-btn:disabled:hover .ico svg{display:none;}
-#start-btn:disabled:hover .ico::after,#stop-btn:disabled:hover .ico::after{content:"🚫";font-size:16px;}
+/* Disabled controls keep their original play/stop icon; only the cursor changes. */
+#start-btn:disabled .ico::before,#start-btn:disabled .ico::after,
+#stop-btn:disabled .ico::before,#stop-btn:disabled .ico::after{content:none!important;display:none!important;}
+#start-btn:disabled .ico svg,#stop-btn:disabled .ico svg{display:block!important;}
+
 .btn-block{width:100%;}
 .btn-sm{min-height:32px;padding:5px 10px;font-size:12px;}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;}
@@ -436,7 +439,7 @@ input.invalid{border-color:var(--red) !important;}
   <div class="container">
 
     <header class="header">
-      <span class="logo"><span class="logo-mark"><span class="ico" data-icon="bot"></span></span>kwishtt</span>
+      <span class="logo"><span class="logo-mark"><span class="ico" data-icon="bot"></span></span>YuleeVoice</span>
       <span class="pill"><span data-i18n="stats_mode">Mode</span>: <b id="stat-mode">—</b></span>
       <span class="pill"><span data-i18n="stats_uptime">Uptime</span>: <b id="stat-uptime">00:00:00</b></span>
       <span class="pill"><span class="ico" data-icon="key"></span><span data-i18n="stats_tokens">Tokens</span>: <b id="stat-tokens">0</b></span>
@@ -518,10 +521,10 @@ input.invalid{border-color:var(--red) !important;}
           </div>
           <div class="control-row">
             <button id="start-btn" class="btn btn-success grow" type="button" disabled>
-              <span class="ico" data-icon="play"></span><span data-i18n="btn_start">START</span>
+              <span class="ico control-emoji" id="start-emoji" aria-hidden="true">▶️</span><span data-i18n="btn_start">START</span>
             </button>
             <button id="stop-btn" class="btn btn-danger grow" type="button" disabled>
-              <span class="ico" data-icon="stop"></span><span data-i18n="btn_stop">STOP</span>
+              <span class="ico control-emoji" aria-hidden="true">🛑</span><span data-i18n="btn_stop">STOP</span>
             </button>
           </div>
           <div class="bulk-grid">
@@ -906,6 +909,7 @@ input.invalid{border-color:var(--red) !important;}
   var controlBusy = false;
   function updateControlButtons(){
     var running = lastSummary && (lastSummary.active_mode || 'idle') !== 'idle';
+    $('start-emoji').textContent = running ? '⏯️' : '▶️';
     startBtn.disabled = controlBusy || !lastSummary || running;
     stopBtn.disabled = controlBusy || !lastSummary || !running;
   }
@@ -1228,6 +1232,7 @@ input.invalid{border-color:var(--red) !important;}
       + '<div class="bot-controls">'
       + actionButton(bot, 'move', 'move', 'btn_move')
       + actionButton(bot, 'chat', 'message', 'btn_chat')
+      + '<button class="toggle-btn" type="button" data-action="stop" data-bot-id="' + esc(bot.id || bot.token_masked) + '">🛑 Stop</button>'
       + '</div></article>';
   }
   function renderBots(bots){
@@ -1291,6 +1296,14 @@ input.invalid{border-color:var(--red) !important;}
       var actionBotId = actionBtn.getAttribute('data-bot-id');
       if (action === 'move') { openMoveModal(actionBotId); }
       else if (action === 'chat') { openChatModal(actionBotId); }
+      else if (action === 'stop') {
+        if (actionBtn.disabled) { return; }
+        actionBtn.disabled = true;
+        api('/api/bots/' + encodeURIComponent(actionBotId) + '/stop', 'POST').then(function(data){
+          if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return; }
+          toast(lang === 'vi' ? 'Đã dừng bot được chọn.' : 'Selected bot stopped.', 'success');
+        }).finally(function(){ actionBtn.disabled = false; refreshStatus(); });
+      }
       return;
     }
     var button = event.target.closest('.toggle-btn');
@@ -1336,7 +1349,7 @@ input.invalid{border-color:var(--red) !important;}
     askConfirm('confirm_stop_msg').then(function(ok){
       if (!ok) { return; }
       return api('/api/stop', 'POST').then(function(data){
-        if (!data) { toast(t('err_request_failed'), 'error'); return; }
+        if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return; }
         toast(t('msg_stopped'), 'success');
       });
     }).finally(function(){

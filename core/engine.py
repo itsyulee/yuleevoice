@@ -818,6 +818,19 @@ class BotManager:
 
         app_logger.info("HOÀN TẤT! Đã phân phối tất cả %d token.", total)
 
+    async def stop_single(self, bot_id: int | str) -> bool:
+        """Close only the selected bot, preserving its saved token."""
+        bot = self._find_bot(bot_id)
+        if bot is None:
+            return False
+        await bot.close()
+        if bot in self.bots:
+            self.bots.remove(bot)
+        if not self.bots:
+            self.active_mode = "idle"
+        app_logger.info("Đã dừng bot %s", bot_id)
+        return True
+
     async def stop_all(self) -> None:
         """Đóng toàn bộ bot và đưa hệ thống về trạng thái idle."""
         app_logger.info("Đang dừng %d bot...", len(self.bots))
