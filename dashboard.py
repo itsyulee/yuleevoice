@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import json
 import socket
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import AsyncIterator
 
 import uvicorn
@@ -14,7 +15,7 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 
 from config import config, first_run_setup
-from core.api import router as api_router
+from core.api import router as api_router, StartBody, VOICE_SETTINGS_FILE
 from core.auth import auth_middleware
 from core.engine import bot_manager
 from core.logger import app_logger, log_handler
@@ -63,8 +64,33 @@ async def shutdown() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Cleanup khi uvicorn shutdown (Ctrl+C hoặc SIGTERM)."""
-    yield
-    await shutdown()
+    startup_task = None
+    if VOICE_SETTINGS_FILE.exists():
+        try:
+            saved = StartBody(**json.loads(VOICE_SETTINGS_FILE.read_text(encoding="utf-8")))
+            channel_ids = [int(cid) for cid in saved.channel_ids]
+            if not channel_ids:
+                raise ValueError("Danh sách channel trống")
+            bot_manager.channel_ids = channel_ids
+            if saved.mode == "normal":
+                startup_task = asyncio.create_task(
+                    bot_manager.start_normal(channel_ids, saved.delay)
+                )
+            else:
+                startup_task = asyncio.create_task(
+                    bot_manager.start_auto_room(channel_ids[0], saved.leader_count, saved.delay)
+                )
+            app_logger.info("Tự động join các channel đã lưu khi khởi động.")
+        except (OSError, ValueError, TypeError):
+            app_logger.exception("Không đọc được cấu hình voice; hãy nhập lại trên dashboard.")
+    try:
+        yield
+    finally:
+        if startup_task is not None:
+            startup_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await startup_task
+        await shutdown()
 
 
 def create_app() -> FastAPI:

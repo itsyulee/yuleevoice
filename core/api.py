@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import json
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from config import config
+from config import config, PROJECT_DIR
 from core.auth import create_token
 from core.engine import bot_manager
 from core.logger import app_logger, log_handler
 from core.tunnel import tunnel_manager
+
+VOICE_SETTINGS_FILE = PROJECT_DIR / "voice_settings.json"
 
 router: APIRouter = APIRouter(prefix="/api")
 
@@ -33,8 +37,8 @@ class StartBody(BaseModel):
 
     mode: Literal["normal", "auto_room"]
     channel_ids: list[str] = Field(default_factory=list)
-    delay: float = 5.0
-    leader_count: int = 5
+    delay: float = Field(default=5.0, ge=0, allow_inf_nan=False)
+    leader_count: int = Field(default=5, ge=1)
 
 
 class ToggleBody(BaseModel):
@@ -137,6 +141,19 @@ async def start(body: StartBody) -> dict[str, Any]:
     channel_ids = [_parse_int(cid, "channel_id") for cid in body.channel_ids]
     if not channel_ids:
         raise HTTPException(status_code=400, detail="Cần ít nhất một channel ID")
+
+    # Persist strings so Discord snowflakes never lose precision in JavaScript.
+    settings = {
+        "mode": body.mode, "channel_ids": [str(cid) for cid in channel_ids],
+        "delay": body.delay, "leader_count": body.leader_count,
+    }
+    temporary = VOICE_SETTINGS_FILE.with_suffix(".tmp")
+    try:
+        temporary.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        temporary.replace(VOICE_SETTINGS_FILE)
+    except OSError:
+        app_logger.exception("Không lưu được cấu hình voice")
+        raise HTTPException(status_code=500, detail="Không lưu được cấu hình voice")
 
     if body.mode == "normal":
         asyncio.create_task(bot_manager.start_normal(channel_ids, body.delay))

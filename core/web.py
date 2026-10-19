@@ -192,6 +192,9 @@ a{color:var(--accent);}
 .btn:hover{border-color:var(--border-strong);background:var(--surface-3);}
 .btn:active{transform:translateY(1px);}
 .btn:disabled{opacity:.5;cursor:not-allowed;}
+#start-btn:disabled:hover .ico,#stop-btn:disabled:hover .ico{font-size:0;}
+#start-btn:disabled:hover .ico svg,#stop-btn:disabled:hover .ico svg{display:none;}
+#start-btn:disabled:hover .ico::after,#stop-btn:disabled:hover .ico::after{content:"🚫";font-size:16px;}
 .btn-block{width:100%;}
 .btn-sm{min-height:32px;padding:5px 10px;font-size:12px;}
 .btn-primary{background:var(--accent);border-color:var(--accent);color:#fff;}
@@ -514,10 +517,10 @@ input.invalid{border-color:var(--red) !important;}
             </label>
           </div>
           <div class="control-row">
-            <button id="start-btn" class="btn btn-success grow" type="button">
+            <button id="start-btn" class="btn btn-success grow" type="button" disabled>
               <span class="ico" data-icon="play"></span><span data-i18n="btn_start">START</span>
             </button>
-            <button id="stop-btn" class="btn btn-danger grow" type="button">
+            <button id="stop-btn" class="btn btn-danger grow" type="button" disabled>
               <span class="ico" data-icon="stop"></span><span data-i18n="btn_stop">STOP</span>
             </button>
           </div>
@@ -900,6 +903,23 @@ input.invalid{border-color:var(--red) !important;}
   var lastSummary = null, lastTokenCount = 0, loginErrorKey = '';
   var moveBotId = '', chatBotId = '';
 
+  var controlBusy = false;
+  function updateControlButtons(){
+    var running = lastSummary && (lastSummary.active_mode || 'idle') !== 'idle';
+    startBtn.disabled = controlBusy || !lastSummary || running;
+    stopBtn.disabled = controlBusy || !lastSummary || !running;
+  }
+  // Save drafts immediately, including before START is pressed.
+  [[channelIdsInput, 'mgl_voice_channels'],
+   [chatChannel, CHAT_CHANNEL_KEY],
+   [chatAllChannel, CHAT_CHANNEL_KEY],
+   [reactionChannel, 'mgl_reaction_channel']].forEach(function(entry){
+    try { entry[0].value = localStorage.getItem(entry[1]) || ''; } catch (err) {}
+    entry[0].addEventListener('input', function(){
+      try { localStorage.setItem(entry[1], entry[0].value); } catch (err) {}
+    });
+  });
+
   /* ---------- Toast ---------- */
   function toast(message, type){
     var el = document.createElement('div');
@@ -1136,6 +1156,7 @@ input.invalid{border-color:var(--red) !important;}
   }
   function renderSummary(summary){
     lastSummary = summary;
+    updateControlButtons();
     var bots = summary.bots || [];
     var errors = bots.filter(function(bot){ return !!bot.error; }).length;
 
@@ -1227,9 +1248,9 @@ input.invalid{border-color:var(--red) !important;}
     copyBtn.setAttribute('data-url', url);
   }
   function refreshStatus(){
-    if (!token) { return; }
-    api('/api/status', 'GET').then(function(data){
-      if (data) { renderTunnel(data); }
+    if (!token) { return Promise.resolve(); }
+    return api('/api/status', 'GET').then(function(data){
+      if (data) { renderSummary(data); renderTunnel(data); }
     });
   }
   function appendLog(entry){
@@ -1286,6 +1307,7 @@ input.invalid{border-color:var(--red) !important;}
     });
   });
   startBtn.addEventListener('click', function(){
+    if (startBtn.disabled) { return; }
     var ids = channelIdsInput.value.split(/[\s,]+/).filter(Boolean);
     if (!ids.length) { toast(t('msg_enter_channel'), 'error'); return; }
     var payload = {
@@ -1294,22 +1316,31 @@ input.invalid{border-color:var(--red) !important;}
       delay: parseFloat(delayInput.value) || 0,
       leader_count: parseInt(leaderCountInput.value, 10) || 5
     };
+    controlBusy = true;
+    updateControlButtons();
     api('/api/start', 'POST', payload).then(function(data){
-      if (!data) { toast(t('err_request_failed'), 'error'); return; }
+      if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return; }
       if (payload.mode === 'auto_room') {
         toast(t('msg_started_auto').replace('{id}', ids[0]).replace('{n}', payload.leader_count), 'success');
       } else {
         toast(t('msg_started_normal').replace('{n}', ids.length), 'success');
       }
+    }).finally(function(){
+      return refreshStatus().finally(function(){ controlBusy = false; updateControlButtons(); });
     });
   });
   stopBtn.addEventListener('click', function(){
+    if (stopBtn.disabled) { return; }
+    controlBusy = true;
+    updateControlButtons();
     askConfirm('confirm_stop_msg').then(function(ok){
       if (!ok) { return; }
-      api('/api/stop', 'POST').then(function(data){
+      return api('/api/stop', 'POST').then(function(data){
         if (!data) { toast(t('err_request_failed'), 'error'); return; }
         toast(t('msg_stopped'), 'success');
       });
+    }).finally(function(){
+      return refreshStatus().finally(function(){ controlBusy = false; updateControlButtons(); });
     });
   });
   renameAllBtn.addEventListener('click', function(){
