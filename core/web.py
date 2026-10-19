@@ -416,7 +416,7 @@ input.invalid{border-color:var(--red) !important;}
       </button>
     </div>
     <div class="login-logo"><span class="ico" data-icon="bot"></span></div>
-    <h1>kwishtt</h1>
+    <h1>yuleevoice</h1>
     <p class="login-sub" data-i18n="login_sub">Sign in to manage your voice system</p>
     <div class="password-field">
       <input id="password-input" type="password" data-i18n-ph="ph_password" placeholder="Dashboard password" autocomplete="current-password" aria-label="Password">
