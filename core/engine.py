@@ -679,10 +679,24 @@ class BotManager:
         finally:
             bot.notify_state_change()
 
+    async def start_assigned(self, assignments: dict[str, int], delay: float = 5.0) -> None:
+        """Use explicit account assignments; unassigned accounts stay stopped."""
+        selected = [(token, assignments[hashlib.sha256(token.encode()).hexdigest()])
+                    for token in dict.fromkeys(self.tokens)
+                    if hashlib.sha256(token.encode()).hexdigest() in assignments]
+        self.active_mode = "manual"
+        self.start_timestamp = time.time()
+        self.channel_ids = list(dict.fromkeys(channel for _, channel in selected))
+        for index, (token, channel) in enumerate(selected):
+            bot = self._create_bot(token, channel)
+            asyncio.create_task(self.safe_start_bot(bot, token))
+            if index < len(selected) - 1 and delay > 0:
+                await asyncio.sleep(delay)
+
     async def start_normal(
         self, channel_ids: list[int] | None = None, delay: float = 5.0
     ) -> None:
-        """Chế độ thường: chia đều bot vào các voice channel (round-robin)."""
+        """Auto: mỗi kênh một bot; token dư không khởi động."""
         if channel_ids:
             self.channel_ids = list(channel_ids)
 
@@ -696,25 +710,17 @@ class BotManager:
         self.active_mode = "normal"
         self.start_timestamp = time.time()
 
-        num_channels = len(self.channel_ids)
-        for i, token in enumerate(self.tokens):
-            if len(token) < 5:
-                continue
-
-            assigned_channel = self.channel_ids[i % num_channels]
+        channels = list(dict.fromkeys(self.channel_ids))
+        tokens = list(dict.fromkeys(token for token in self.tokens if len(token) >= 5))
+        selected = list(zip(tokens, channels))
+        for i, (token, assigned_channel) in enumerate(selected):
             bot = self._create_bot(token, assigned_channel)
             app_logger.info("Bot %d → Channel %s", i + 1, assigned_channel)
-
             asyncio.create_task(self.safe_start_bot(bot, token))
-
-            if i < len(self.tokens) - 1 and delay > 0:
-                app_logger.info(
-                    "Chờ %.1fs trước lần login tiếp theo... (%d/%d)",
-                    delay,
-                    i + 1,
-                    len(self.tokens),
-                )
+            if i < len(selected) - 1 and delay > 0:
                 await asyncio.sleep(delay)
+        if len(tokens) > len(selected):
+            app_logger.info("Auto: %d bot không chạy vì không còn kênh trống.", len(tokens) - len(selected))
 
     async def start_auto_room(
         self, lobby_id: int, leader_count: int = 5, delay: float = 5.0

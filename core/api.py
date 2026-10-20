@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import secrets
 import json
 from pathlib import Path
@@ -21,6 +22,8 @@ from core.tunnel import tunnel_manager
 VOICE_SETTINGS_FILE = PROJECT_DIR / "voice_settings.json"
 
 router: APIRouter = APIRouter(prefix="/api")
+start_task: asyncio.Task | None = None
+channel_labels: dict[str, str] = {}
 
 
 # -----------------------------------------------------------------------------
@@ -35,8 +38,9 @@ class LoginBody(BaseModel):
 class StartBody(BaseModel):
     """Body khởi động bot ở chế độ normal hoặc auto_room."""
 
-    mode: Literal["normal", "auto_room"]
+    mode: Literal["normal", "manual", "auto_room"]
     channel_ids: list[str] = Field(default_factory=list)
+    assignments: dict[str, str] = Field(default_factory=dict)
     delay: float = Field(default=5.0, ge=0, allow_inf_nan=False)
     leader_count: int = Field(default=5, ge=1)
 
@@ -149,11 +153,17 @@ async def get_voice_settings() -> dict[str, Any]:
 async def save_voice_settings(body: StartBody) -> dict[str, Any]:
     if any(not cid.isascii() or not cid.isdigit() or not 17 <= len(cid) <= 20 for cid in body.channel_ids):
         raise HTTPException(status_code=400, detail="Channel ID phải gồm 17–20 chữ số")
+    if any(not cid.isascii() or not cid.isdigit() or not 17 <= len(cid) <= 20 for cid in body.assignments.values()):
+        raise HTTPException(status_code=400, detail="Channel ID không hợp lệ")
+    account_keys = {hashlib.sha256(token.encode()).hexdigest() for token in bot_manager.tokens}
+    if any(key not in account_keys for key in body.assignments):
+        raise HTTPException(status_code=400, detail="Danh sách bot đã thay đổi, hãy tải lại trang")
     channel_ids = list(dict.fromkeys(body.channel_ids))
     # Channel IDs stay strings to preserve Discord snowflake precision.
     settings = {
         "mode": body.mode, "channel_ids": [str(cid) for cid in channel_ids],
         "delay": body.delay, "leader_count": body.leader_count,
+        "assignments": body.assignments,
     }
     temporary = VOICE_SETTINGS_FILE.with_suffix(".tmp")
     try:
@@ -166,36 +176,60 @@ async def save_voice_settings(body: StartBody) -> dict[str, Any]:
     return {"success": True, **settings}
 
 
+@router.get("/voice-channel-labels")
+async def get_voice_channel_labels() -> dict[str, Any]:
+    for bot in bot_manager.bots:
+        for guild in bot.guilds:
+            for channel in [*guild.voice_channels, *guild.stage_channels]:
+                channel_labels[str(channel.id)] = f"{channel.name} - {guild.name}"
+    return {"labels": channel_labels}
+
+
+@router.get("/voice-accounts")
+async def get_voice_accounts() -> dict[str, Any]:
+    return {"accounts": [
+        {"key": hashlib.sha256(token.encode()).hexdigest(), "label": f"Bot {i + 1} · {_mask_token(token)}"}
+        for i, token in enumerate(bot_manager.tokens)
+    ]}
+
+
 @router.post("/start")
 async def start() -> dict[str, Any]:
-    """Run the saved configuration without modifying it."""
+    """Start only accounts with explicit saved voice assignments."""
+    global start_task
+    if (start_task and not start_task.done()) or bot_manager.active_mode != "idle":
+        raise HTTPException(status_code=409, detail="Bot đang chạy; hãy Stop trước")
     body = StartBody.model_validate(await get_voice_settings())
-    channel_ids = [_parse_int(cid, "channel_id") for cid in body.channel_ids]
-    if not channel_ids:
-        raise HTTPException(status_code=400, detail="Hãy Add Channel trước khi Start")
-
-    if body.mode == "normal":
-        asyncio.create_task(bot_manager.start_normal(channel_ids, body.delay))
-        message = (
-            f"Đã bắt đầu chế độ normal với {len(channel_ids)} channel"
-        )
+    if body.mode == "manual":
+        current_keys = {hashlib.sha256(token.encode()).hexdigest() for token in bot_manager.tokens}
+        assignments = {key: int(cid) for key, cid in body.assignments.items() if key in current_keys}
+        if not assignments:
+            raise HTTPException(status_code=400, detail="Hãy chọn voice cho từng bot và lưu trước khi Start")
+        bot_manager.active_mode = "manual"
+        start_task = asyncio.create_task(bot_manager.start_assigned(assignments, body.delay))
     else:
-        lobby_id = channel_ids[0]
-        asyncio.create_task(
-            bot_manager.start_auto_room(lobby_id, body.leader_count, body.delay)
-        )
-        message = (
-            f"Đã bắt đầu chế độ auto_room tại lobby {lobby_id} "
-            f"với {body.leader_count} leader"
-        )
-
-    app_logger.info(message)
-    return {"success": True, "message": message}
+        if not body.channel_ids or not bot_manager.tokens:
+            raise HTTPException(status_code=400, detail="Cần thêm channel và token trước khi Start")
+        ids = [_parse_int(cid, "channel_id") for cid in body.channel_ids]
+        bot_manager.active_mode = body.mode
+        if body.mode == "auto_room":
+            start_task = asyncio.create_task(bot_manager.start_auto_room(ids[0], body.leader_count, body.delay))
+        else:
+            start_task = asyncio.create_task(bot_manager.start_normal(ids, body.delay))
+    return {"success": True, "message": "Đã khởi động bot"}
 
 
 @router.post("/stop")
 async def stop() -> dict[str, Any]:
     """Dừng toàn bộ bot."""
+    global start_task
+    if start_task and not start_task.done():
+        start_task.cancel()
+        try:
+            await start_task
+        except asyncio.CancelledError:
+            pass
+    start_task = None
     await bot_manager.stop_all()
     return {"success": True, "message": "Đã dừng tất cả bots"}
 

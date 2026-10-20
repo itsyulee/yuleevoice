@@ -503,8 +503,9 @@ input.invalid{border-color:var(--red) !important;}
           <div class="control-row mode-row">
             <label><span data-i18n="lbl_mode">Mode</span>
               <select id="mode-select">
-                <option value="normal" data-i18n="opt_normal">Normal</option>
-                <option value="auto_room" data-i18n="opt_auto_room">Auto-Room</option>
+                <option value="manual">Manual</option>
+                <option value="normal">Auto</option>
+                <option value="auto_room">Auto-Room</option>
               </select>
             </label>
             <label><span data-i18n="lbl_delay">Delay (seconds)</span>
@@ -520,6 +521,7 @@ input.invalid{border-color:var(--red) !important;}
               <input id="leader-count" type="number" value="5" min="1" style="width:90px">
             </label>
           </div>
+          <div id="voice-assignments" style="display:grid;gap:8px;margin:12px 0"></div>
           <div id="saved-channels" style="display:grid;gap:8px;margin:12px 0"></div>
           <button id="save-voice-btn" class="btn" type="button" data-i18n="btn_save_voice">Save settings</button>
         </section>
@@ -918,7 +920,7 @@ input.invalid{border-color:var(--red) !important;}
   function updateControlButtons(){
     var running = lastSummary && (lastSummary.active_mode || 'idle') !== 'idle';
     $('start-emoji').textContent = running ? '⏯️' : '▶️';
-    startBtn.disabled = controlBusy || voiceBusy || !voiceLoaded || !savedChannels.length || !lastSummary || running;
+    startBtn.disabled = controlBusy || voiceBusy || !voiceLoaded || (modeSelect.value === 'manual' ? !Object.keys(voiceAssignments).length : !savedChannels.length) || !lastSummary || running;
     stopBtn.disabled = controlBusy || !lastSummary || !running;
   }
   // Save drafts immediately, including before START is pressed.
@@ -932,14 +934,24 @@ input.invalid{border-color:var(--red) !important;}
   });
 
   var savedChannels = [], voiceLoaded = false, voiceBusy = false;
+  var voiceAccounts = [], voiceAssignments = {}, channelLabels = {};
+  function channelText(id){
+    return channelLabels[id] ? id + ' (' + channelLabels[id] + ')' : id;
+  }
+  function refreshChannelLabels(){
+    return api('/api/voice-channel-labels', 'GET').then(function(data){
+      if (data) { channelLabels = data.labels || {}; renderChannels(); }
+    });
+  }
   function renderChannels(){
     var list = $('saved-channels');
     list.replaceChildren();
+    renderAssignments();
     savedChannels.forEach(function(id){
       var row = document.createElement('div');
       row.className = 'control-row';
       var label = document.createElement('span');
-      label.className = 'grow'; label.textContent = id;
+      label.className = 'grow'; label.textContent = channelText(id);
       var remove = document.createElement('button');
       remove.type = 'button'; remove.className = 'btn btn-danger';
       remove.textContent = lang === 'vi' ? 'Xóa' : 'Remove';
@@ -948,9 +960,31 @@ input.invalid{border-color:var(--red) !important;}
       row.append(label, remove); list.appendChild(row);
     });
   }
+  function renderAssignments(){
+    var list = $('voice-assignments'); list.replaceChildren();
+    list.classList.toggle('hidden', modeSelect.value !== 'manual');
+    voiceAccounts.forEach(function(account){
+      var row = document.createElement('label'); row.className = 'control-row';
+      var label = document.createElement('span'); label.textContent = account.label;
+      var select = document.createElement('select'); select.className = 'grow';
+      var empty = document.createElement('option'); empty.value = '';
+      empty.textContent = lang === 'vi' ? 'Không chạy' : 'Do not start'; select.appendChild(empty);
+      savedChannels.forEach(function(id){
+        var option = document.createElement('option'); option.value = id; option.textContent = channelText(id); select.appendChild(option);
+      });
+      select.value = voiceAssignments[account.key] || ''; select.disabled = voiceBusy;
+      select.onchange = function(){
+        if (select.value) { voiceAssignments[account.key] = select.value; }
+        else { delete voiceAssignments[account.key]; }
+        updateControlButtons();
+      };
+      row.append(label, select); list.appendChild(row);
+    });
+  }
   function voicePayload(ids){
     return {mode: modeSelect.value, channel_ids: ids,
-      delay: Number(delayInput.value), leader_count: Number(leaderCountInput.value)};
+      delay: Number(delayInput.value), leader_count: Number(leaderCountInput.value),
+      assignments: Object.fromEntries(Object.entries(voiceAssignments).filter(function(entry){ return ids.indexOf(entry[1]) !== -1; }))};
   }
   function saveVoice(ids){
     if (!voiceLoaded || voiceBusy) { return Promise.resolve(false); }
@@ -960,6 +994,7 @@ input.invalid{border-color:var(--red) !important;}
     return api('/api/voice-settings', 'PUT', voicePayload(ids)).then(function(data){
       if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return false; }
       savedChannels = data.channel_ids;
+      voiceAssignments = data.assignments || {};
       toast(lang === 'vi' ? 'Đã lưu cấu hình kênh.' : 'Channel settings saved.', 'success');
       return true;
     }).finally(function(){
@@ -980,15 +1015,20 @@ input.invalid{border-color:var(--red) !important;}
   channelIdsInput.addEventListener('keydown', function(event){
     if (event.key === 'Enter') { event.preventDefault(); $('add-channel-btn').click(); }
   });
+  modeSelect.addEventListener('change', function(){ renderAssignments(); updateControlButtons(); });
   $('save-voice-btn').onclick = function(){ saveVoice(savedChannels.slice()); };
   function loadVoice(){
-    if (voiceLoaded) { return; }
-    return api('/api/voice-settings', 'GET').then(function(data){
+    if (voiceLoaded) { return refreshChannelLabels(); }
+    return Promise.all([api('/api/voice-settings', 'GET'), api('/api/voice-accounts', 'GET')]).then(function(results){
+      var data = results[0];
+      if (!results[1]) { return; }
+      voiceAccounts = results[1].accounts || [];
+      voiceAssignments = data && data.assignments || {};
       if (!data) { return; }
       savedChannels = data.channel_ids || [];
       modeSelect.value = data.mode; delayInput.value = data.delay; leaderCountInput.value = data.leader_count;
       modeSelect.dispatchEvent(new Event('change'));
-      voiceLoaded = true; renderChannels(); updateControlButtons();
+      voiceLoaded = true; renderChannels(); updateControlButtons(); return refreshChannelLabels();
     });
   }
 
@@ -1395,11 +1435,7 @@ input.invalid{border-color:var(--red) !important;}
     updateControlButtons();
     api('/api/start', 'POST').then(function(data){
       if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return; }
-      if (payload.mode === 'auto_room') {
-        toast(t('msg_started_auto').replace('{id}', ids[0]).replace('{n}', payload.leader_count), 'success');
-      } else {
-        toast(t('msg_started_normal').replace('{n}', ids.length), 'success');
-      }
+      toast(lang === 'vi' ? 'Đã khởi động bot.' : 'Bots started.', 'success');
     }).finally(function(){
       return refreshStatus().finally(function(){ controlBusy = false; updateControlButtons(); });
     });
@@ -1474,6 +1510,7 @@ input.invalid{border-color:var(--red) !important;}
       api('/api/tokens', 'PUT', {tokens: lines}).then(function(data){
         if (!data) { toast(t('err_request_failed'), 'error'); return; }
         setTokenCount(data.count);
+        voiceLoaded = false; loadVoice();
         toast(t('msg_tokens_saved').replace('{n}', data.count), 'success');
       });
     });
