@@ -150,7 +150,7 @@ async def get_voice_settings() -> dict[str, Any]:
 
 
 @router.put("/voice-settings")
-async def save_voice_settings(body: StartBody) -> dict[str, Any]:
+async def save_voice_settings(body: StartBody, apply_now: bool = False) -> dict[str, Any]:
     if any(not cid.isascii() or not cid.isdigit() or not 17 <= len(cid) <= 20 for cid in body.channel_ids):
         raise HTTPException(status_code=400, detail="Channel ID phải gồm 17–20 chữ số")
     if any(not cid.isascii() or not cid.isdigit() or not 17 <= len(cid) <= 20 for cid in body.assignments.values()):
@@ -173,7 +173,41 @@ async def save_voice_settings(body: StartBody) -> dict[str, Any]:
         app_logger.exception("Không lưu được cấu hình voice")
         raise HTTPException(status_code=500, detail="Không lưu được cấu hình voice")
 
-    return {"success": True, **settings}
+    if apply_now:
+        try:
+            await apply_saved_voice(body)
+        except HTTPException:
+            raise
+        except Exception:
+            app_logger.exception("Đã lưu nhưng không áp dụng được cấu hình voice")
+            raise HTTPException(status_code=500, detail="Đã lưu nhưng không áp dụng được. Hãy cập nhật đủ core/api.py, core/engine.py, core/web.py rồi khởi động lại; xem log hosting nếu vẫn lỗi.")
+    return {"success": True, "applied": apply_now, **settings}
+
+
+async def apply_saved_voice(body: StartBody) -> None:
+    global start_task
+    if start_task and not start_task.done():
+        start_task.cancel()
+        try:
+            await start_task
+        except asyncio.CancelledError:
+            pass
+    if body.mode == "auto_room":
+        await bot_manager.stop_all()
+        if body.channel_ids and bot_manager.tokens:
+            bot_manager.active_mode = "auto_room"
+            start_task = asyncio.create_task(bot_manager.start_auto_room(
+                int(body.channel_ids[0]), body.leader_count, body.delay))
+        return
+    if body.mode == "manual":
+        assignments = {key: int(cid) for key, cid in body.assignments.items()}
+    else:
+        tokens = list(dict.fromkeys(token for token in bot_manager.tokens if len(token) >= 5))
+        channels = list(dict.fromkeys(body.channel_ids))
+        assignments = {hashlib.sha256(token.encode()).hexdigest(): int(cid)
+                       for token, cid in zip(tokens, channels)}
+    bot_manager.active_mode = body.mode if assignments else "idle"
+    start_task = asyncio.create_task(bot_manager.apply_assignments(assignments, body.delay, body.mode))
 
 
 @router.get("/voice-channel-labels")

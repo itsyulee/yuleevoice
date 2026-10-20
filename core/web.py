@@ -984,18 +984,27 @@ input.invalid{border-color:var(--red) !important;}
   function voicePayload(ids){
     return {mode: modeSelect.value, channel_ids: ids,
       delay: Number(delayInput.value), leader_count: Number(leaderCountInput.value),
-      assignments: Object.fromEntries(Object.entries(voiceAssignments).filter(function(entry){ return ids.indexOf(entry[1]) !== -1; }))};
+      assignments: Object.fromEntries(Object.entries(voiceAssignments).filter(function(entry){ return ids.indexOf(entry[1]) !== -1 && voiceAccounts.some(function(account){ return account.key === entry[0]; }); }))};
   }
-  function saveVoice(ids){
+  function saveVoice(ids, applyNow){
     if (!voiceLoaded || voiceBusy) { return Promise.resolve(false); }
     voiceBusy = true;
     $('add-channel-btn').disabled = $('save-voice-btn').disabled = true;
     renderChannels(); updateControlButtons();
-    return api('/api/voice-settings', 'PUT', voicePayload(ids)).then(function(data){
-      if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return false; }
+    return apiWithStatus('/api/voice-settings' + (applyNow ? '?apply_now=true' : ''), 'PUT', voicePayload(ids)).then(function(result){
+      var data = result.data;
+      if (!data || !data.success || result.status >= 400) {
+        var detail = data && (data.detail || data.error);
+        if (Array.isArray(detail)) { detail = detail.map(function(item){ return (item.loc || []).join('.') + ': ' + item.msg; }).join('; '); }
+        var message = typeof detail === 'string' ? detail :
+          (result.status === 404 ? 'Không tìm thấy API lưu cấu hình. Cập nhật đủ 3 file core và khởi động lại app.' :
+           result.status === 0 ? 'Mất kết nối tới server. Kiểm tra hosting và thử lại.' :
+           'Không lưu được cấu hình (HTTP ' + result.status + '). Kiểm tra log hosting.');
+        toast(message, 'error'); return false;
+      }
       savedChannels = data.channel_ids;
       voiceAssignments = data.assignments || {};
-      toast(lang === 'vi' ? 'Đã lưu cấu hình kênh.' : 'Channel settings saved.', 'success');
+      toast(data.applied ? (lang === 'vi' ? 'Đã lưu, đang áp dụng kênh cho bot.' : 'Saved. Applying bot channels.') : (lang === 'vi' ? 'Đã lưu cấu hình kênh.' : 'Channel settings saved.'), 'success');
       return true;
     }).finally(function(){
       voiceBusy = false;
@@ -1016,7 +1025,7 @@ input.invalid{border-color:var(--red) !important;}
     if (event.key === 'Enter') { event.preventDefault(); $('add-channel-btn').click(); }
   });
   modeSelect.addEventListener('change', function(){ renderAssignments(); updateControlButtons(); });
-  $('save-voice-btn').onclick = function(){ saveVoice(savedChannels.slice()); };
+  $('save-voice-btn').onclick = function(){ saveVoice(savedChannels.slice(), true).finally(refreshStatus); };
   function loadVoice(){
     if (voiceLoaded) { return refreshChannelLabels(); }
     return Promise.all([api('/api/voice-settings', 'GET'), api('/api/voice-accounts', 'GET')]).then(function(results){

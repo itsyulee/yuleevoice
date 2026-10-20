@@ -679,6 +679,38 @@ class BotManager:
         finally:
             bot.notify_state_change()
 
+    async def apply_assignments(self, assignments: dict[str, int], delay: float, mode: str) -> None:
+        """Reconcile saved assignments without reconnecting unaffected accounts."""
+        selected = [(token, assignments[hashlib.sha256(token.encode()).hexdigest()])
+                    for token in dict.fromkeys(self.tokens)
+                    if hashlib.sha256(token.encode()).hexdigest() in assignments]
+        desired = dict(selected)
+        for bot in list(self.bots):
+            if bot.token_str not in desired:
+                await bot.close()
+                if bot in self.bots:
+                    self.bots.remove(bot)
+        existing = {bot.token_str: bot for bot in self.bots}
+        self.active_mode = mode if selected else "idle"
+        self.channel_ids = list(dict.fromkeys(channel for _, channel in selected))
+        if not self.start_timestamp:
+            self.start_timestamp = time.time()
+        new_count = 0
+        for token, channel in selected:
+            bot = existing.get(token)
+            if bot is not None:
+                changed = bot.target_channel_id != channel
+                bot.target_channel_id = channel
+                if bot.is_ready() and (changed or not bot.is_connected):
+                    if not await bot.join_vc(channel):
+                        app_logger.error("Không áp dụng được voice cho bot %s", bot.bot_id)
+                continue
+            if new_count and delay > 0:
+                await asyncio.sleep(delay)
+            bot = self._create_bot(token, channel)
+            asyncio.create_task(self.safe_start_bot(bot, token))
+            new_count += 1
+
     async def start_assigned(self, assignments: dict[str, int], delay: float = 5.0) -> None:
         """Use explicit account assignments; unassigned accounts stay stopped."""
         selected = [(token, assignments[hashlib.sha256(token.encode()).hexdigest()])
