@@ -499,7 +499,7 @@ input.invalid{border-color:var(--red) !important;}
 
       <aside class="side-col">
         <section class="panel">
-          <div class="panel-head"><h2 data-i18n="controls_title">Controls</h2></div>
+          <div class="panel-head"><h2 data-i18n="channels_title">Add Channel</h2></div>
           <div class="control-row mode-row">
             <label><span data-i18n="lbl_mode">Mode</span>
               <select id="mode-select">
@@ -514,11 +514,17 @@ input.invalid{border-color:var(--red) !important;}
           <div class="control-row">
             <label class="grow"><span data-i18n="lbl_channel_ids">Channel IDs</span>
               <input id="channel-ids" type="text" data-i18n-ph="ph_channel_ids" placeholder="e.g. 123456789 987654321">
+              <button id="add-channel-btn" class="btn" type="button" data-i18n="btn_add_channel">Add Channel</button>
             </label>
             <label id="leader-wrap" class="hidden"><span data-i18n="lbl_leader">Leaders</span>
               <input id="leader-count" type="number" value="5" min="1" style="width:90px">
             </label>
           </div>
+          <div id="saved-channels" style="display:grid;gap:8px;margin:12px 0"></div>
+          <button id="save-voice-btn" class="btn" type="button" data-i18n="btn_save_voice">Save settings</button>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2 data-i18n="controls_title">Controls</h2></div>
           <div class="control-row">
             <button id="start-btn" class="btn btn-success grow" type="button" disabled>
               <span class="ico control-emoji" id="start-emoji" aria-hidden="true">▶️</span><span data-i18n="btn_start">START</span>
@@ -722,6 +728,7 @@ input.invalid{border-color:var(--red) !important;}
       stat_total: 'Total Bots', stat_online: 'Online', stat_in_voice: 'In Voice', stat_errors: 'Errors',
       bots_title: 'Bots', no_bots: 'No bots yet',
       controls_title: 'Controls',
+      channels_title: 'Add Channel', btn_add_channel: 'Add Channel', btn_save_voice: 'Save settings',
       lbl_mode: 'Mode', opt_normal: 'Normal', opt_auto_room: 'Auto-Room',
       lbl_channel_ids: 'Channel IDs', ph_channel_ids: 'e.g. 123456789 987654321',
       lbl_delay: 'Delay (seconds)', lbl_leader: 'Leaders',
@@ -795,6 +802,7 @@ input.invalid{border-color:var(--red) !important;}
       stat_total: 'Tổng số Bot', stat_online: 'Online', stat_in_voice: 'Trong Voice', stat_errors: 'Lỗi',
       bots_title: 'Bot', no_bots: 'Chưa có bot nào',
       controls_title: 'Điều khiển',
+      channels_title: 'Thêm kênh / Add Channel', btn_add_channel: 'Thêm kênh', btn_save_voice: 'Lưu cấu hình',
       lbl_mode: 'Chế độ', opt_normal: 'Normal', opt_auto_room: 'Auto-Room',
       lbl_channel_ids: 'Channel IDs', ph_channel_ids: 'VD: 123456789 987654321',
       lbl_delay: 'Delay (giây)', lbl_leader: 'Số leader',
@@ -910,12 +918,11 @@ input.invalid{border-color:var(--red) !important;}
   function updateControlButtons(){
     var running = lastSummary && (lastSummary.active_mode || 'idle') !== 'idle';
     $('start-emoji').textContent = running ? '⏯️' : '▶️';
-    startBtn.disabled = controlBusy || !lastSummary || running;
+    startBtn.disabled = controlBusy || voiceBusy || !voiceLoaded || !savedChannels.length || !lastSummary || running;
     stopBtn.disabled = controlBusy || !lastSummary || !running;
   }
   // Save drafts immediately, including before START is pressed.
-  [[channelIdsInput, 'mgl_voice_channels'],
-   [chatChannel, CHAT_CHANNEL_KEY],
+  [[chatChannel, CHAT_CHANNEL_KEY],
    [chatAllChannel, CHAT_CHANNEL_KEY],
    [reactionChannel, 'mgl_reaction_channel']].forEach(function(entry){
     try { entry[0].value = localStorage.getItem(entry[1]) || ''; } catch (err) {}
@@ -923,6 +930,67 @@ input.invalid{border-color:var(--red) !important;}
       try { localStorage.setItem(entry[1], entry[0].value); } catch (err) {}
     });
   });
+
+  var savedChannels = [], voiceLoaded = false, voiceBusy = false;
+  function renderChannels(){
+    var list = $('saved-channels');
+    list.replaceChildren();
+    savedChannels.forEach(function(id){
+      var row = document.createElement('div');
+      row.className = 'control-row';
+      var label = document.createElement('span');
+      label.className = 'grow'; label.textContent = id;
+      var remove = document.createElement('button');
+      remove.type = 'button'; remove.className = 'btn btn-danger';
+      remove.textContent = lang === 'vi' ? 'Xóa' : 'Remove';
+      remove.disabled = voiceBusy;
+      remove.onclick = function(){ saveVoice(savedChannels.filter(function(value){ return value !== id; })); };
+      row.append(label, remove); list.appendChild(row);
+    });
+  }
+  function voicePayload(ids){
+    return {mode: modeSelect.value, channel_ids: ids,
+      delay: Number(delayInput.value), leader_count: Number(leaderCountInput.value)};
+  }
+  function saveVoice(ids){
+    if (!voiceLoaded || voiceBusy) { return Promise.resolve(false); }
+    voiceBusy = true;
+    $('add-channel-btn').disabled = $('save-voice-btn').disabled = true;
+    renderChannels(); updateControlButtons();
+    return api('/api/voice-settings', 'PUT', voicePayload(ids)).then(function(data){
+      if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return false; }
+      savedChannels = data.channel_ids;
+      toast(lang === 'vi' ? 'Đã lưu cấu hình kênh.' : 'Channel settings saved.', 'success');
+      return true;
+    }).finally(function(){
+      voiceBusy = false;
+      $('add-channel-btn').disabled = $('save-voice-btn').disabled = false;
+      renderChannels(); updateControlButtons();
+    });
+  }
+  $('add-channel-btn').onclick = function(){
+    var ids = channelIdsInput.value.split(/[\s,]+/).filter(Boolean);
+    if (!ids.length || ids.some(function(id){ return !/^[0-9]{17,20}$/.test(id); })) {
+      toast(t('err_channel_id_invalid'), 'error'); return;
+    }
+    saveVoice(Array.from(new Set(savedChannels.concat(ids)))).then(function(ok){
+      if (ok) { channelIdsInput.value = ''; }
+    });
+  };
+  channelIdsInput.addEventListener('keydown', function(event){
+    if (event.key === 'Enter') { event.preventDefault(); $('add-channel-btn').click(); }
+  });
+  $('save-voice-btn').onclick = function(){ saveVoice(savedChannels.slice()); };
+  function loadVoice(){
+    if (voiceLoaded) { return; }
+    return api('/api/voice-settings', 'GET').then(function(data){
+      if (!data) { return; }
+      savedChannels = data.channel_ids || [];
+      modeSelect.value = data.mode; delayInput.value = data.delay; leaderCountInput.value = data.leader_count;
+      modeSelect.dispatchEvent(new Event('change'));
+      voiceLoaded = true; renderChannels(); updateControlButtons();
+    });
+  }
 
   /* ---------- Toast ---------- */
   function toast(message, type){
@@ -1255,7 +1323,7 @@ input.invalid{border-color:var(--red) !important;}
   function refreshStatus(){
     if (!token) { return Promise.resolve(); }
     return api('/api/status', 'GET').then(function(data){
-      if (data) { renderSummary(data); renderTunnel(data); }
+      if (data) { renderSummary(data); renderTunnel(data); return loadVoice(); }
     });
   }
   function appendLog(entry){
@@ -1321,17 +1389,11 @@ input.invalid{border-color:var(--red) !important;}
   });
   startBtn.addEventListener('click', function(){
     if (startBtn.disabled) { return; }
-    var ids = channelIdsInput.value.split(/[\s,]+/).filter(Boolean);
-    if (!ids.length) { toast(t('msg_enter_channel'), 'error'); return; }
-    var payload = {
-      mode: modeSelect.value,
-      channel_ids: ids,
-      delay: parseFloat(delayInput.value) || 0,
-      leader_count: parseInt(leaderCountInput.value, 10) || 5
-    };
+    var ids = savedChannels.slice();
+    var payload = voicePayload(ids);
     controlBusy = true;
     updateControlButtons();
-    api('/api/start', 'POST', payload).then(function(data){
+    api('/api/start', 'POST').then(function(data){
       if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return; }
       if (payload.mode === 'auto_room') {
         toast(t('msg_started_auto').replace('{id}', ids[0]).replace('{n}', payload.leader_count), 'success');
@@ -1346,12 +1408,9 @@ input.invalid{border-color:var(--red) !important;}
     if (stopBtn.disabled) { return; }
     controlBusy = true;
     updateControlButtons();
-    askConfirm('confirm_stop_msg').then(function(ok){
-      if (!ok) { return; }
-      return api('/api/stop', 'POST').then(function(data){
+    api('/api/stop', 'POST').then(function(data){
         if (!data || !data.success) { toast(t('err_request_failed'), 'error'); return; }
         toast(t('msg_stopped'), 'success');
-      });
     }).finally(function(){
       return refreshStatus().finally(function(){ controlBusy = false; updateControlButtons(); });
     });

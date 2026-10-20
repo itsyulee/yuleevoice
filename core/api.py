@@ -135,14 +135,22 @@ async def get_status() -> dict[str, Any]:
     return {**bot_manager.get_summary(), **tunnel_manager.get_status()}
 
 
-@router.post("/start")
-async def start(body: StartBody) -> dict[str, Any]:
-    """Khởi động bot ở chế độ normal hoặc auto_room (chạy nền)."""
-    channel_ids = [_parse_int(cid, "channel_id") for cid in body.channel_ids]
-    if not channel_ids:
-        raise HTTPException(status_code=400, detail="Cần ít nhất một channel ID")
+@router.get("/voice-settings")
+async def get_voice_settings() -> dict[str, Any]:
+    if not VOICE_SETTINGS_FILE.exists():
+        return StartBody(mode="normal").model_dump()
+    try:
+        return StartBody.model_validate_json(VOICE_SETTINGS_FILE.read_text(encoding="utf-8")).model_dump()
+    except (OSError, ValueError):
+        raise HTTPException(status_code=500, detail="Không đọc được cấu hình voice")
 
-    # Persist strings so Discord snowflakes never lose precision in JavaScript.
+
+@router.put("/voice-settings")
+async def save_voice_settings(body: StartBody) -> dict[str, Any]:
+    if any(not cid.isascii() or not cid.isdigit() or not 17 <= len(cid) <= 20 for cid in body.channel_ids):
+        raise HTTPException(status_code=400, detail="Channel ID phải gồm 17–20 chữ số")
+    channel_ids = list(dict.fromkeys(body.channel_ids))
+    # Channel IDs stay strings to preserve Discord snowflake precision.
     settings = {
         "mode": body.mode, "channel_ids": [str(cid) for cid in channel_ids],
         "delay": body.delay, "leader_count": body.leader_count,
@@ -154,6 +162,17 @@ async def start(body: StartBody) -> dict[str, Any]:
     except OSError:
         app_logger.exception("Không lưu được cấu hình voice")
         raise HTTPException(status_code=500, detail="Không lưu được cấu hình voice")
+
+    return {"success": True, **settings}
+
+
+@router.post("/start")
+async def start() -> dict[str, Any]:
+    """Run the saved configuration without modifying it."""
+    body = StartBody.model_validate(await get_voice_settings())
+    channel_ids = [_parse_int(cid, "channel_id") for cid in body.channel_ids]
+    if not channel_ids:
+        raise HTTPException(status_code=400, detail="Hãy Add Channel trước khi Start")
 
     if body.mode == "normal":
         asyncio.create_task(bot_manager.start_normal(channel_ids, body.delay))
